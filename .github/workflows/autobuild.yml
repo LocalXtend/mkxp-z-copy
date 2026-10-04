@@ -76,7 +76,7 @@ jobs:
         shell: msys2 {0}
         run: |
           source windows/vars.sh
-          meson setup build -Dc_std=gnu17
+          meson setup build -Dc_std=gnu17 "-Dcpp_args=['-include','cstdint']"
           cd build
           ninja
           strip ./mkxp-z.exe
