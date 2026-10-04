@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # CMake 4 refuses projects that ask for < 3.5, including ones configured from inside other builds
+  CMAKE_POLICY_VERSION_MINIMUM: '3.5'
+
 jobs:
   build-windows:
     name: Windows
