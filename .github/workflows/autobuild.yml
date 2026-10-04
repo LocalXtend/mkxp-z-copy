@@ -72,8 +72,10 @@ jobs:
             fi
           done
           echo "" >> $out
-          echo "# MSYS2 packages used (toolchain, zlib1.dll), source at https://packages.msys2.org/" >> $out
-          pacman -Q mingw-w64-x86_64-gcc mingw-w64-x86_64-zlib mingw-w64-x86_64-meson >> $out
+          echo "# MSYS2 packages linked into mkxp-z.exe or shipped (OpenSSL, libiconv: static; zlib1.dll)" >> $out
+          echo "# and the toolchain. Sources: deps-source zip / https://repo.msys2.org/mingw/sources/" >> $out
+          pacman -Q mingw-w64-x86_64-openssl mingw-w64-x86_64-libiconv mingw-w64-x86_64-zlib >> $out
+          pacman -Q mingw-w64-x86_64-gcc mingw-w64-x86_64-meson >> $out
           cat $out
 
       - name: Build exe
@@ -120,6 +122,10 @@ jobs:
               n=$(basename $d)
               git -C $d archive --format=tar.gz --prefix=$n/ -o "$PWD/build/deps-source/$n.tar.gz" HEAD
             fi
+          done
+          for p in openssl libiconv zlib; do
+            v=$(pacman -Q mingw-w64-x86_64-$p | cut -d' ' -f2)
+            curl -fsSL -o "build/deps-source/mingw-w64-$p-$v.src.tar.zst" "https://repo.msys2.org/mingw/sources/mingw-w64-$p-$v.src.tar.zst"
           done
           cp windows/deps-sources.txt build/deps-source/
           cd build
