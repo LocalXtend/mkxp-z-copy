@@ -1,23 +1,27 @@
-# I have no idea what I'm doing
+# RocketRPG build of mkxp-z 2.4.2 (upstream a5d5749), Windows x64 only.
+# Changes from upstream CI: current action versions, Windows job only, a list of the exact
+# dependency sources, and on a rocketrpg-* tag a GitHub release with the build and those sources.
 name: Automatic Build
 
 on:
   push:
-    branches: ['dev', 'autobuild']
+    branches: ['rocketrpg']
+    tags: ['rocketrpg-*']
     paths-ignore: ['*.md', '*.json', '*.png']
-  pull_request:
-    branches: ['dev', 'autobuild']
-    paths-ignore: ['*.md', '*.json', '*.png']
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
     name: Windows
     runs-on: windows-latest
     steps:
-      - uses: benjlevesque/short-sha@v2.2
+      - name: Short SHA
         id: short-sha
-        with:
-          length: 7
+        shell: bash
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -32,13 +36,13 @@ jobs:
             mingw-w64-x86_64-meson
             mingw-w64-x86_64-autotools
             mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-zlib
             zip
 
-
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - uses: actions/cache@v3
+      - uses: actions/cache@v4
         with:
           path: |
             windows/build-mingw64
@@ -51,11 +55,28 @@ jobs:
           cd windows
           make
 
+      - name: List dependency sources
+        shell: msys2 {0}
+        run: |
+          out=windows/deps-sources.txt
+          echo "mkxp-z $(git rev-parse HEAD)" > $out
+          echo "" >> $out
+          echo "# Libraries built from source (windows/Makefile), repository and exact commit" >> $out
+          for d in windows/downloads/mingw64/*/; do
+            if [ -d "$d/.git" ]; then
+              echo "$(basename $d) $(git -C $d remote get-url origin) $(git -C $d rev-parse HEAD)" >> $out
+            fi
+          done
+          echo "" >> $out
+          echo "# MSYS2 packages used (toolchain, zlib1.dll), source at https://packages.msys2.org/" >> $out
+          pacman -Q mingw-w64-x86_64-gcc mingw-w64-x86_64-zlib mingw-w64-x86_64-meson >> $out
+          cat $out
+
       - name: Build exe
         shell: msys2 {0}
         run: |
           source windows/vars.sh
-          meson setup build
+          meson setup build -Dc_std=gnu17
           cd build
           ninja
           strip ./mkxp-z.exe
@@ -73,228 +94,43 @@ jobs:
           cp ../../mkxp.json .
           cp -r ../../scripts .
           cp ../../assets/LICENSE.mkxp-z-with-https.txt .
+          cp ../../windows/deps-sources.txt .
           cd ..
           # Zipping before uploading decreases the upload time considerably.
           # Unfortunately this results in double-zipping; tracked at:
           # https://github.com/actions/upload-artifact/issues/426
           zip -r artifact.zip artifact
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
-          name: mkxp-z.windows.${{github.event_name == 'pull_request' && format('PR{0}', github.event.number) || github.ref_name}}-${{steps.short-sha.outputs.sha}}
+          name: mkxp-z.windows.${{github.ref_name}}-${{steps.short-sha.outputs.sha}}
           path: build/artifact.zip
 
-  build-linux-native:
-    name: Ubuntu 22.04 x86_64
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: benjlevesque/short-sha@v2.2
-        id: short-sha
-        with:
-          length: 7
-
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - uses: actions/cache@v3
-        with:
-          path: |
-            linux/build-x86_64
-            linux/downloads
-          key: lin-x86_64-${{ hashFiles('linux/Makefile') }}
-
-      - name: Install apt dependencies
+      - name: Pack dependency sources
+        if: startsWith(github.ref, 'refs/tags/rocketrpg-')
+        shell: msys2 {0}
         run: |
-          sudo apt update
-          sudo apt install git build-essential cmake meson autoconf automake libtool pkg-config ruby bison zlib1g-dev libbz2-dev xorg-dev libgl1-mesa-dev libasound2-dev libpulse-dev -y
-
-      - name: Build everything else
-        run: |
-          cd linux
-          make
-
-      - name: Build executable
-        run: |
-          source linux/vars.sh
-          meson setup build --bindir=. --prefix=$GITHUB_WORKSPACE/build/local
+          mkdir -p build/deps-source
+          for d in windows/downloads/mingw64/*/; do
+            if [ -d "$d/.git" ]; then
+              n=$(basename $d)
+              git -C $d archive --format=tar.gz --prefix=$n/ -o "$PWD/build/deps-source/$n.tar.gz" HEAD
+            fi
+          done
+          cp windows/deps-sources.txt build/deps-source/
           cd build
-          ninja
-          ninja install
+          zip -r -0 deps-source.zip deps-source
 
-      - name: Prepare archive
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/rocketrpg-')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cd build/local
-          cp -r ../../linux/build-x86_64/lib/ruby/3.1.0 .
-          mv ./3.1.0 ./stdlib
-          cp ../../mkxp.json .
-          cp -r ../../scripts .
-          cp ../../assets/LICENSE.mkxp-z-with-https.txt .
-          cd ..
-          # Zipping before uploading preserves +x permissions.
-          # Unfortunately this results in double-zipping; tracked at:
-          # https://github.com/actions/upload-artifact/issues/426
-          zip -r local.zip local
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: mkxp-z.linux.x86_64.${{github.event_name == 'pull_request' && format('PR{0}', github.event.number) || github.ref_name}}-${{steps.short-sha.outputs.sha}}
-          path: build/local.zip
-
-  build-linux-cross:
-    name: Ubuntu 22.04 ${{matrix.arch_mkxpz}}
-    runs-on: ubuntu-22.04
-    continue-on-error: ${{ matrix.experimental }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch_mkxpz: armv6
-            arch_debian: armhf
-            arch_gcc: arm-linux-gnueabihf
-            experimental: false
-          - arch_mkxpz: armv7
-            arch_debian: armhf
-            arch_gcc: arm-linux-gnueabihf
-            experimental: false
-          - arch_mkxpz: armv7-neon
-            arch_debian: armhf
-            arch_gcc: arm-linux-gnueabihf
-            experimental: false
-          - arch_mkxpz: arm64
-            arch_debian: arm64
-            arch_gcc: aarch64-linux-gnu
-            experimental: false
-          - arch_mkxpz: power8le
-            arch_debian: ppc64el
-            arch_gcc: powerpc64le-linux-gnu
-            experimental: false
-          - arch_mkxpz: power9le
-            arch_debian: ppc64el
-            arch_gcc: powerpc64le-linux-gnu
-            experimental: false
-          - arch_mkxpz: s390x
-            arch_debian: s390x
-            arch_gcc: s390x-linux-gnu
-            # src/util/serial-util.h errors on big-endian targets.
-            experimental: true
-          - arch_mkxpz: riscv64
-            arch_debian: riscv64
-            arch_gcc: riscv64-linux-gnu
-            # libjxl/highway compatibility issue, TODO check if fixed in later SDL_image.
-            # Also probably an OpenSSL arch name issue, which might be fixed by now.
-            experimental: true
-    steps:
-      - uses: benjlevesque/short-sha@v2.2
-        id: short-sha
-        with:
-          length: 7
-
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - uses: actions/cache@v3
-        with:
-          path: |
-            linux/build-${{matrix.arch_mkxpz}}
-            linux/downloads
-          key: lin-${{matrix.arch_mkxpz}}-${{ hashFiles('linux/Makefile', 'linux/target*', 'linux/toolchain*') }}
-
-      - name: Install apt dependencies
-        run: |
-          sudo sed -i "s/deb /deb [arch=amd64] /g" /etc/apt/sources.list
-          sudo dpkg --add-architecture ${{matrix.arch_debian}}
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy-updates universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=${{matrix.arch_debian}}] http://ports.ubuntu.com/ jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          sudo apt update
-          sudo apt install git build-essential cmake meson autoconf automake libtool pkg-config ruby bison -y
-          sudo apt install libdmx-dev:${{matrix.arch_debian}} libfontenc-dev:${{matrix.arch_debian}} libfs-dev:${{matrix.arch_debian}} libice-dev:${{matrix.arch_debian}} libsm-dev:${{matrix.arch_debian}} libx11-dev:${{matrix.arch_debian}} libxau-dev:${{matrix.arch_debian}} libxaw7-dev:${{matrix.arch_debian}} libxcomposite-dev:${{matrix.arch_debian}} libxcursor-dev:${{matrix.arch_debian}} libxdamage-dev:${{matrix.arch_debian}} libxdmcp-dev:${{matrix.arch_debian}} libxext-dev:${{matrix.arch_debian}} libxfixes-dev:${{matrix.arch_debian}} libxfont-dev:${{matrix.arch_debian}} libxft-dev:${{matrix.arch_debian}} libxi-dev:${{matrix.arch_debian}} libxinerama-dev:${{matrix.arch_debian}} libxkbfile-dev:${{matrix.arch_debian}} libxmu-dev:${{matrix.arch_debian}} libxmuu-dev:${{matrix.arch_debian}} libxpm-dev:${{matrix.arch_debian}} libxrandr-dev:${{matrix.arch_debian}} libxrender-dev:${{matrix.arch_debian}} libxres-dev:${{matrix.arch_debian}} libxss-dev:${{matrix.arch_debian}} libxt-dev:${{matrix.arch_debian}} libxtst-dev:${{matrix.arch_debian}} libxv-dev:${{matrix.arch_debian}} libxvmc-dev:${{matrix.arch_debian}} libxxf86dga-dev:${{matrix.arch_debian}} libxxf86vm-dev:${{matrix.arch_debian}} x11proto-dev:${{matrix.arch_debian}} xserver-xorg-dev:${{matrix.arch_debian}} xtrans-dev:${{matrix.arch_debian}} -y
-          sudo apt install gcc-${{matrix.arch_gcc}} g++-${{matrix.arch_gcc}} zlib1g-dev:${{matrix.arch_debian}} libbz2-dev:${{matrix.arch_debian}} libgl1-mesa-dev:${{matrix.arch_debian}} libasound2-dev:${{matrix.arch_debian}} libpulse-dev:${{matrix.arch_debian}} -y
-
-      - name: Build everything else
-        run: |
-          cd linux
-          source target-${{matrix.arch_mkxpz}}.sh
-          make
-
-      - name: Build executable
-        run: |
-          source linux/target-${{matrix.arch_mkxpz}}.sh
-          source linux/vars.sh
-          meson setup --cross-file linux/$ARCH_MESON_TOOLCHAIN build --bindir=. --prefix=$GITHUB_WORKSPACE/build/local
-          cd build
-          ninja
-          ninja install
-          cp "$MKXPZ_PREFIX/lib/$("$ARCH_CONFIGURE-objdump" -p local/mkxp-z* | grep -i NEEDED | grep -Eo 'libruby.so.[0-9\.]+')" local/lib*/
-          cp "/usr/lib/$ARCH_CONFIGURE/$("$ARCH_CONFIGURE-objdump" -p local/lib*/libruby.so* | grep -i NEEDED | grep -Eo 'libcrypt.so.[0-9\.]+')" local/lib*/
-
-      - name: Prepare archive
-        run: |
-          cd build/local
-          cp -r ../../linux/build-${{matrix.arch_mkxpz}}/lib/ruby/3.1.0 .
-          mv ./3.1.0 ./stdlib
-          cp ../../mkxp.json .
-          cp -r ../../scripts .
-          cp ../../assets/LICENSE.mkxp-z-with-https.txt .
-          cd ..
-          zip -r local.zip local
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: mkxp-z.linux.${{matrix.arch_mkxpz}}.${{github.event_name == 'pull_request' && format('PR{0}', github.event.number) || github.ref_name}}-${{steps.short-sha.outputs.sha}}
-          path: build/local.zip
-
-  build-macos:
-    name: macOS
-    runs-on: macos-latest
-    steps:
-      - uses: benjlevesque/short-sha@v2.2
-        id: short-sha
-        with:
-          length: 7
-
-      - name: Remove pre-existing homebrew packages
-        run: brew remove --force $(brew list)
-
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - uses: actions/cache@v3
-        with:
-          path: |
-            macos/Dependencies/build-macosx-x86_64
-            macos/Dependencies/build-macosx-arm64
-            macos/Dependencies/build-macosx-universal
-            macos/Dependencies/downloads
-          key: mac-${{ hashFiles('macos/Dependencies/*.make', 'macos/Dependencies/*.sh') }}
-
-      - name: Install Homebrew tools
-        run: |
-          cd macos/Dependencies
-          brew bundle
-
-      - name: Build all dependencies
-        run: |
-          cd macos/Dependencies
-          ./setup.sh
-
-      - name: Build app
-        run: |
-          cd macos
-          xcodebuild -project mkxp-z.xcodeproj -configuration "Release" -scheme "Universal" -derivedDataPath "$GITHUB_WORKSPACE/build"
-
-      - name: Compress app
-        run: |
-          cd build/Build/Products/Release
-          cp ../../../../assets/LICENSE.mkxp-z-with-https.txt ./Z-universal.app/
-          ditto -c -k --sequesterRsrc --keepParent Z-universal.app Z-universal.app.zip
-
-      - name: Upload archive
-        uses: actions/upload-artifact@v3
-        with:
-          name: mkxp-z.macos.${{github.event_name == 'pull_request' && format('PR{0}', github.event.number) || github.ref_name}}-${{steps.short-sha.outputs.sha}}
-          path: build/Build/Products/Release/Z-universal.app.zip
+          tag="${GITHUB_REF_NAME}"
+          cp build/artifact.zip "mkxp-z-${tag}-win64.zip"
+          cp build/deps-source.zip "mkxp-z-${tag}-deps-source.zip"
+          notes="mkxp-z 2.4.2 (upstream a5d5749) built by GitHub Actions for RocketRPG.
+          Source: this tag. Exact sources of the libraries built into it: deps-source zip (list in deps-sources.txt)."
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --title "$tag" --notes "$notes" \
+            "mkxp-z-${tag}-win64.zip" "mkxp-z-${tag}-deps-source.zip"

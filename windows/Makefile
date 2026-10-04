@@ -14,7 +14,7 @@ BINDIR := $(BUILD_PREFIX)/bin
 INCLUDEDIR := $(BUILD_PREFIX)/include
 DOWNLOADS := ${PWD}/downloads/$(ARCH)
 NPROC := $(shell nproc)
-CFLAGS := -I$(INCLUDEDIR) -O3
+CFLAGS := -I$(INCLUDEDIR) -O3 -std=gnu17
 LDFLAGS := -L$(LIBDIR)
 CC      := gcc
 PKG_CONFIG_LIBDIR := $(BUILD_PREFIX)/lib/pkgconfig
